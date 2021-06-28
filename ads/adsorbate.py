@@ -144,7 +144,8 @@ class Adsorbate:
                     v.append(E)
                 else:
                     E = 0
-                    
+                    make_job(xyz=xyz, path=self.path, file_name=self.file_name.format(count),
+                            **self.qchem_kwargs)
                 if write:
                     # write a file showing geometric configurations to sample
                     name = 'configs.txt'
@@ -167,7 +168,7 @@ class Adsorbate:
             'ads{}.q.out'.format(self.nads))):
             ads_xyz = getXYZ(self.samp.symbols[:self.nads],
                     self.samp.internal.cart_coords[:(3*self.nads)])
-            adsJob = Job(xyz=self.ads_xyz, path=self.directory,
+            adsJob = Job(xyz=ads_xyz, path=self.directory,
                     file_name='ads{}'.format(self.nads), jobtype='freq', **self.ads_kwargs)
             adsJob.write_input_file()
             adsJob.submit()
@@ -180,3 +181,31 @@ class Adsorbate:
         return Log.load_conformer()
         
 
+def make_job(xyz, path, file_name, ncpus, charge=None, multiplicity=None, level_of_theory=None, basis=None, unrestricted=None, \
+        is_QM_MM_INTERFACE=None, QM_USER_CONNECT=None, QM_ATOMS=None, force_field_params=None, fixed_molecule_string=None, opt=None, number_of_fixed_atoms=None):
+    #file_name = 'output'
+    if is_QM_MM_INTERFACE:
+        # Create geometry format of QM/MM system 
+        # <Atom> <X> <Y> <Z> <MM atom type> <Bond 1> <Bond 2> <Bond 3> <Bond 4>
+        # For example:
+        # O 7.256000 1.298000 9.826000 -1  185  186  0 0
+        # O 6.404000 1.114000 12.310000 -1  186  713  0 0
+        # O 4.077000 1.069000 0.082000 -1  188  187  0 0
+        # H 1.825000 1.405000 12.197000 -3  714  0  0 0
+        # H 2.151000 1.129000 9.563000 -3  189  0  0 0
+        # -----------------------------------
+        QMMM_xyz_string = ''
+        for i, xyz in enumerate(xyz.split('\n')):
+            QMMM_xyz_string += " ".join([xyz, QM_USER_CONNECT[i]]) + '\n'
+            if i == len(QM_ATOMS)-1:
+                break
+        QMMM_xyz_string += fixed_molecule_string
+        job = Job(QMMM_xyz_string, path, file_name,jobtype='sp', ncpus=ncpus, charge=charge, multiplicity=multiplicity, \
+            level_of_theory=level_of_theory, basis=basis, unrestricted=unrestricted, QM_atoms=QM_ATOMS, \
+            force_field_params=force_field_params, opt=opt, number_of_fixed_atoms=number_of_fixed_atoms)
+    else:
+        job = Job(xyz, path, file_name,jobtype='sp', ncpus=ncpus, charge=charge, multiplicity=multiplicity, \
+            level_of_theory=level_of_theory, basis=basis, unrestricted=unrestricted)
+    
+    # Write Q-Chem input file
+    job.write_input_file()
