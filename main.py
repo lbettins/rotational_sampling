@@ -68,7 +68,7 @@ def main():
     U,S,V = np.linalg.svd(Ymat, full_matrices=False)
     ahat = np.matmul( np.linalg.pinv(np.matmul(U, np.matmul( np.diag(S), V))), np.array(v))
     
-    print(ahat)
+    print(len(ahat), ahat)
     inert = ads.get_moment_of_inertia()[0]
     #print(inert.get_partition_function(300))
     #print(inert.get_entropy(300))
@@ -77,6 +77,38 @@ def main():
     I = np.sum(np.power(np.array(inert.modes[1].inertia.value), -1.))
     print(I)
     print(inert.modes[1].inertia.value)
+
+    ###################################################
+    # CALC THERMO
+    ###################################################
+    conformer = inert
+
+    # Gas phase translation
+    E_trans = 1.5 * constants.R * T / 4184
+    S_trans = conformer.modes[0].get_entropy(T)/4.184\
+            - constants.R*math.log(P / 101325)/4.184
+    Cv_trans = 1.5 * constants.R / 4184 * 1000
+    Q_trans = conformer.modes[0].get_partition_function(T)
+
+    # Gas phase rotation
+    E_rot = conformer.modes[1].get_enthalpy(T) / 4184
+    S_rot = conformer.modes[1].get_entropy(T) / 4.184
+    Cv_rot = conformer.modes[1].get_heat_capacity(T) / 4.184
+    Q_rot = conformer.modes[1].get_partition_function(T)
+
+    # Ads phase rotation
+    v, e, s, f, q, cv = ads.solv_eig(ahat, T)
+
+    # Ads phase translation
+    e_trans = 0
+    s_trans = 0
+    cv_trans = 0
+    q_trans = 1
+
+    #####################################################
+    # END CALC THERMO
+    #####################################################
+
 
     make_fig(xsph, v, project_directory, lmax=30)
 

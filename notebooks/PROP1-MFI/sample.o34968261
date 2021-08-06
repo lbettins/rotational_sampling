@@ -1,0 +1,7 @@
+WARNING:root:Optional package dependency "xlwt" not loaded. Some output features will not work.
+/global/scratch/lbettins/spherical_schrodinger/ads/adsorbate.py:127: RuntimeWarning: divide by zero encountered in double_scalars
+  db=2.0*np.pi/nb;             # longitude angle step
+Number of adsorbates is 11
+11 <class 'int'>
+number of adsorbates 11
+Just writing inputs!

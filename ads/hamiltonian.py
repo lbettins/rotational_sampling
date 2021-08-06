@@ -2,16 +2,58 @@
 import numpy as np
 from math import sqrt
 from math import factorial as fact
-
 import rmgpy.constants as constants
-
 from ape.HarmonicBasis import IntXHmHnexp
 from ape.FourierBasis import IntXPhimPhin
+from sympy.physics.wigner import gaunt
 
 hbar1 = constants.hbar / constants.E_h # in hartree*s
 hbar2 = constants.hbar * 10 ** 20 / constants.amu # in amu*angstrom^2/s
 
-def H(ahat, I, Lam=12):
+def Hlmllmm(ahat, I, l, m, ll, mm):
+    result = 0
+    # Loop over fitting coefficients
+    for L in range(int(np.sqrt(len(ahat)))):
+        for M in np.linspace(-L, L, 2*L+1):
+            k = int(np.power(L,2) + L + M)
+            #multiplier = 1
+            #if mm != 0:
+            #    multiplier *= np.sqrt(2)
+            #if m != 0:
+            #    multiplier *= np.sqrt(2)
+            #if M != 0:
+            #    multiplier *= np.sqrt(2)
+            ## â should carry the unit of energy
+            #result += ahat[k] * multiplier*\
+            #        float(gaunt(ll,L,l,mm,int(M),m, prec=64))
+            result += ahat[k] * float(gaunt(ll,L,l,mm,int(M),m, prec=16))
+
+    if ll == l and mm == m:
+        result += hbar1*hbar2* l*(l+1)/2 / I
+    return result # in Hartree
+
+def set_anharmonic_H(ahat, I, Lam, Lam_prev, H_prev):
+    size = Lam**2
+    H = np.zeros((size, size), np.float64)
+    for l in range(Lam):
+        for m in np.linspace(-l, l, 2*l+1):
+            j = int(np.power(l,2)+l+m)
+
+            for ll in range(l+1):
+                for mm in np.linspace(-ll, ll, 2*ll+1):
+                    i = int(np.power(ll,2)+ll+mm)
+
+                    if l < Lam_prev and ll < Lam_prev:
+                        print("Calculating from previous")
+                        hval = H_prev[i][j]
+                    else: # l previously not calculated:
+                        hval = Hlmllmm(ahat, I, l, int(m), ll, int(mm))
+                    #print(hval)
+                    H[i][j] = hval
+                    H[j][i] = hval
+    return H
+
+def H(ahat, I, Lam, H_prev):
     lam = int(np.sqrt(len(ahat)))
     Lam = 12
     M = Lam**2
@@ -39,11 +81,12 @@ def H(ahat, I, Lam=12):
                             if M != 0:
                                 multiplier *= np.sqrt(2)
                             # â should carry the unit of energy
-                            H[i][j] += ahat[k] * multiplier* gaunt(ll,L,l,int(mm),int(M),int(m))
+                            H[i][j] += ahat[k] * multiplier* float(gaunt(ll,L,l,int(mm),int(M),int(m), prec=6))
                             #H[i][j] += ahat[k] * real_gaunt(ll, L, l, int(mm), -int(M), int(m))
                     if ll == l and mm == m:
                         # should have units of energy consistent with â 
                         H[i][j] += hbar2 * l*(l+1)/2. * np.power(I, -1.)
+
 
 def Hmn(m, n, ahat, xsph, v):
     result = 0

@@ -2,6 +2,7 @@
 
 # import needed modules
 import os
+import sys
 from ape.sampling import SamplingJob
 from ape.qchem import QChemLog
 from ape.common import get_electronic_energy
@@ -13,14 +14,17 @@ import numpy as np
 import matplotlib.pyplot as plt
 import mpl_toolkits.mplot3d.axes3d as axes3d
 import scipy.special
+from ads.hamiltonian import set_anharmonic_H
 from sympy.physics.wigner import gaunt
 
 class Adsorbate:
-    def __init__(self, freqfile, directory, nads, T=300, ncpus=4):
+    def __init__(self, freqfile, directory, nads, T=300, P=101325, ncpus=4):
         self.freqfile = freqfile
         self.directory = directory
         self.nads = nads
         self.T = T
+        self.result_info = list()
+        self.P = P
         print(self.nads, type(self.nads))
         
         self.label = freqfile.split('.')[0]
@@ -162,6 +166,95 @@ class Adsorbate:
             v = np.array(v)-np.min(v)
             #np.save
         return np.array(grid), np.array(sph_grid), np.array(v)
+
+    def solv_eig(self, ahat, T):
+        # Solve eigenvalues for ROTATION only
+        Lam = 18
+        Lam_prev = 0
+        H_prev = None
+        Qold = np.log(sys.float_info[0])
+        converge = False
+        while not converge:
+            Lam += 1
+            H = set_anharmonic_H(ahat, I,
+                    Lam, Lam_prev,
+                    H_prev=H_prev)
+            H_prev = deepcopy(H)
+            eig, v = np.linalg.eigh(H)
+            E, S, F, Q, Cv = self.calc_thermo(eig, Lam, T)
+
+            if Qold == np.log(sys.float_info[0]):
+                self.result_info.append("# \n# \t %d \t\t-\t\t-" % Nbasis) #first run
+            else:
+                self.result_info.append("# \n# \t %d \t\t %.10f \t\t %.10f" % (Nbasis,abs(Q-Qold)))
+
+            #if ((abs(Q-Qold)<1e-4)):
+            if ((abs(Q-Qold)<100)):
+                self.result_info.append("# Convergence criterion met")
+                self.result_info.append("# ------------------------------------")
+                converge = True
+                self.result_info.append("# Frequency (cm-1): %.10f" % v)
+                self.result_info.append("# Zero point vibrational energy (hartree): %.10f" % E0)
+                self.result_info.append("# Energy (hartree): %.10f" % E )
+                self.result_info.append("# Entropy (hartree/K): %.10f" % S)
+                self.result_info.append("# Free energy (hartree): %.10f" % F)
+                self.result_info.append("# Partition function: %.10f" % Q)
+                hartree2kcalmol = constants.E_h * constants.Na / 4184
+                E0 *= hartree2kcalmol
+                E *= hartree2kcalmol
+                S *= hartree2kcalmol * 1000
+                F *= hartree2kcalmol
+                Cv *= hartree2kcalmol * 1000
+                '''
+                print("Frequency (cm-1): ",v)
+                print("Zero point vibrational energy (kcal/mol): ",E0)
+                print("Energy (kcal/mol): ",E )
+                print("Entropy (cal/mol/K): ",S)
+                print("Free energy (kcal/mol): ",F)
+                print("Partition function: ",Q)
+                '''
+
+            Qold = Q
+        print("Converged Lambda =", Lam)
+        return E, S, F, Q, Cv
+        
+    def calc_thermo(self, eig, Lam, T):
+        N = Lam**2
+        beta = 1/(constants.kB*T) * constants.E_h
+
+        Q = 0
+        E = 0
+        dQ = 0
+        ddQ = 0
+        for i in range(N):
+            Ei = eig[i]
+            Q += exp(-beta*Ei)
+            dQ += Ei*exp(-beta*Ei)*beta/T
+            ddQ += -2*Ei*exp(-beta*Ei)*beta/pow(T,2) + pow(Ei,2)*exp(-beta*Ei)*pow(beta,2)/pow(T,2)
+            E += Ei*exp(-beta*Ei)
+        E /= Q
+        if True:
+            omega = self.get_symmetry_number()
+            Q /= omega
+            dQ /= omega
+            ddQ /= omega
+
+        E0 = eig[0]
+        v = (eig[1]-eig[0]) * constants.E_h / constants.h / (constants.c * 100)
+        print(v)
+        #print(Q)
+
+        F = -math.log(Q)/beta
+        S = (E - F)/T
+        Cv = (2/Q*dQ - T*pow(dQ/Q,2) + T/Q*ddQ)/beta
+
+        return E, S, F, Q, Cv
+        
+    def get_symmetry_number(self):
+        Log = QChemLog(os.path.join(self.directory,
+            'ads{}.q.out'.format(self.nads)))
+        symmetry = Log.load_conformer[0].modes[1].symmetry
+        return symmetry
 
     def get_moment_of_inertia(self):
         if not os.path.exists(os.path.join(self.directory,
