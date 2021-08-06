@@ -98,7 +98,7 @@ class Adsorbate:
     
     def reorient_by(self, dtheta, dphi):
         # theta is polar angle, phi is azimuthal angle
-        self.rigidrotor.rotate_x(dphi)
+        self.rigidrotor.rotate_y(dphi)
         self.rigidrotor.rotate_z(dtheta)
         self.samp.internal.cart_coords[:(3*self.nads)] = self.rigidrotor.to_array().flatten()
     
