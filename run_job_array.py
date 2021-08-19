@@ -8,7 +8,7 @@ batchfile="""#!/bin/bash
 #SBATCH --account=mhg
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node={nt}
-#SBATCH --array={arr_range}%40
+#SBATCH --array={arr_range}%60
 #SBATCH --output={name}_%A_task_%a.job.o
 #SBATCH --error={name}_%A_task_%a.job.err
 

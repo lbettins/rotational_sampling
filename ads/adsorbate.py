@@ -7,10 +7,11 @@ from ape.sampling import SamplingJob
 from ape.qchem import QChemLog
 from ape.common import get_electronic_energy
 from ape.InternalCoordinates import getXYZ
-from tnuts.qchem import get_level_of_theory
+from tnuts.qchem import get_level_of_theory, load_adsorbate
 from tnuts.job.job import Job
 from rigidObject import RigidObject
 import numpy as np
+import healpy as hp
 import matplotlib.pyplot as plt
 import mpl_toolkits.mplot3d.axes3d as axes3d
 import scipy.special
@@ -26,24 +27,24 @@ class Adsorbate:
         self.result_info = list()
         self.P = P
         print(self.nads, type(self.nads))
-        
+
         self.label = freqfile.split('.')[0]
         self.Log = QChemLog(os.path.join(directory, freqfile))
         level_of_theory_kwargs = get_level_of_theory(self.Log)
-        
+
         self.samp = SamplingJob(
-            input_file=os.path.join(directory, freqfile),
-            label=self.label,
-            ncpus=ncpus, output_directory=directory,
-            thresh=0.5,
-            **level_of_theory_kwargs)
+                input_file=os.path.join(directory, freqfile),
+                label=self.label,
+                ncpus=ncpus, output_directory=directory,
+                thresh=0.5,
+                **level_of_theory_kwargs)
         self.samp.parse()
-        
+
         self.path = os.path.join(self.samp.output_directory, 'output_file')
         if not os.path.exists(self.path):
             os.makedirs(self.path)
         self.file_name = 'samp_{}'
-        
+
         # get qchem kwargs
         # these are all that are needed with APE, with the exception of 'path' and 'file_name'
         self.qchem_kwargs = {}
@@ -70,16 +71,20 @@ class Adsorbate:
         self.qchem_kwargs['fixed_molecule_string'] = self.samp.fixed_molecule_string
         self.qchem_kwargs['opt'] = self.samp.opt
         self.qchem_kwargs['number_of_fixed_atoms'] = self.samp.number_of_fixed_atoms
-        
+
         # get mass of adsorbate
         print("number of adsorbates", self.nads)
-        mass = self.samp.conformer.mass.value_si[:self.nads]
-        coordinates = self.samp.conformer.coordinates.value[:self.nads]
+        #mass = self.samp.conformer.mass.value_si[:self.nads]
+        #coordinates = self.samp.conformer.coordinates.value[:self.nads]
+
+        coordinates, adsnums, mass = load_adsorbate(self.Log, nads)
+        self.mycoords = self.Log.load_geometry()[0]
+
         #if linear is None:
         #    linear = is_linear(coordinates)
         #    if linear:
         #        logging.info('Determined species {0} to be linear.'.format(label))
-        
+
         # get center of mass of adsorbate
         # THIS WILL STAY CONSTANT
         xm = 0.0
@@ -94,74 +99,148 @@ class Adsorbate:
         xm /= totmass
         ym /= totmass
         zm /= totmass
-        
+
+        print("CENTER OF MASS IS AT", (xm, ym, zm))
+        print("COORDS ARE", self.samp.internal.c3d)
         self.com = np.array([xm,ym,zm])    # AGAIN, THIS WILL STAY CONSTANT
-        self.rigidrotor = RigidObject(nads, self.samp.internal.c3d)
+        self.com = np.array([0,0,0])
+        print("NEW CENTER OF MASS IS AT", (0,0,0))
+        print("NEW COORDS ARE", self.mycoords)
+        self.rigidrotor = RigidObject(nads, self.mycoords)
         self.rigidrotor.change_origin(self.com) # Set rotational origin to c.o.m.
         self.record_script ='''{natom}\n# Point {sample} Energy = {e_elect}\n{xyz}\n'''
-    
+
     def reorient_by(self, dtheta, dphi):
         # theta is polar angle, phi is azimuthal angle
-        self.rigidrotor.rotate_y(dphi)
-        self.rigidrotor.rotate_z(dtheta)
+        self.rigidrotor.rotate_y(dtheta)
+        self.rigidrotor.rotate_z(dphi)
         self.samp.internal.cart_coords[:(3*self.nads)] = self.rigidrotor.to_array().flatten()
-    
+        self.mycoords[:self.nads] = self.rigidrotor.to_array()
+
     def sample(self, na=20, dry=False, write=False):
         # Returns a cartesian and spherical grid
         # na is the sampling resolution
         # spherical grid order = (θ, φ)
         # na = number of circular slices
-        
+
         # filename for vmd viewing
         name = 'configs.txt'
-        
+
         # begin sampling spherical grid
         grid = []
         sph_grid = []                                
         v = []
         count = 0
-        
-        da=np.pi/(na-1); # latitude angle step
-        a = np.pi/2
-        actual_a = 0
-        for ia in range(na): # slice sphere to circles in xy planes
-            r=np.cos(a);                           # radius of actual circle in xy plane
-            z=np.sin(a);                           # height of actual circle in xy plane
-            nb=np.ceil(2.0*np.pi*r/da)
-            db=2.0*np.pi/nb;             # longitude angle step
-            if ia==0 or ia==na-1:
-                nb=1
-                db=0.0 # handle edge cases
-            b = 0.0
-            for ib in range(int(nb)):  # cut circle to vertexes
-                x=r*np.cos(b);                     # compute x,y of vertex
-                y=r*np.sin(b);
-                grid.append(np.array([x,y,z]))
-                sph_grid.append(np.array([actual_a,b]))
-                self.reorient_by(da,db)
-                xyz = getXYZ(self.samp.symbols, self.samp.internal.cart_coords)
-                
-                # run Q-Chem job
+
+        #dc = np.pi/(na-1); # intrinsic rotation (spin) step
+
+        #da = np.pi/(na-1); # latitude angle step
+        #a = np.pi/2
+        #actual_a = 0.
+        print('THETA', 'PHI', 'CHI', 'dTHETA', 'dPHI', 'dCHI')
+
+        nside = 2
+        theta, phi = hp.pix2ang(nside, np.arange(0,hp.nside2npix(nside)))
+        xyz = hp.ang2vec(theta,phi)
+
+        thprev = 0.
+        phprev = 0.
+        chprev = 0.
+        chi = np.linspace(0, 2*np.pi, int(np.floor(2*np.pi/hp.nside2resol(nside))+1))[:-1]
+        count = 0
+        grid = hp.ang2vec(theta,phi)
+        for th,ph in zip(theta,phi):
+            self.reorient_by(0, ph-phprev)
+            self.reorient_by(th-thprev, 0)
+            for ch in chi:
+                print("Shifting by:", np.around(th-thprev,3), np.around(ph-phprev,3), np.around(ch-chprev,3),
+                      '\t', "Now at", np.around(th,3), np.around(ph,3), np.around(ch,3))
+                vec = hp.ang2vec(th,ph)
+                print("Z axis vec", *vec)
+                self.rigidrotor.rotate(ch-chprev, np.cos(ph)*np.sin(th), 
+                        np.sin(ph)*np.sin(th), np.cos(th))
+                self.mycoords[:self.nads] = self.rigidrotor.to_array()
+
+                xyz = getXYZ(self.samp.symbols, self.mycoords.ravel())
                 if not dry:
                     E = get_electronic_energy(xyz=xyz, path=self.path, file_name=self.file_name.format(count),
-                                             **self.qchem_kwargs)
+                                **self.qchem_kwargs)
                     v.append(E)
                 else:
                     E = 0
                     make_job(xyz=xyz, path=self.path, file_name=self.file_name.format(count),
                             **self.qchem_kwargs)
-                if write:
-                    # write a file showing geometric configurations to sample
-                    name = 'configs.txt'
-                    with open(os.path.join(self.directory, name), 'a') as f:
-                        content = self.record_script.format(natom=self.samp.natom,
-                                                           sample=count, e_elect=E, xyz=xyz)
-                        f.write(content)
-                        
+                    if write:
+                        # write a file showing geometric configurations to sample
+                        name = 'configs.txt'
+                        with open(os.path.join(self.directory, name), 'a') as f:
+                            content = self.record_script.format(natom=self.samp.natom,
+                                    sample=count, e_elect=E, xyz=xyz)
+                            f.write(content)
+
+                sph_grid.append(np.array([th,ph,ch]))
+                chprev = ch
+                thprev = th
+                phprev = ph
                 count += 1
-                b += db
-            a -= da
-            actual_a += da
+
+
+        #for ia in range(na): # slice sphere to circles in xy planes
+        #    r=np.cos(a);                           # radius of actual circle in xy plane
+        #    z=np.sin(a);                           # height of actual circle in xy plane
+        #    nb=np.ceil(2.0*np.pi*r/da)
+        #    db=2.0*np.pi/nb;             # longitude angle step
+        #    if ia==0 or ia==na-1:
+        #        nb=1
+        #        db=0.0 # handle edge cases
+
+        #    b = 0.0
+        #    for ib in range(int(nb)):  # cut circle to vertexes
+        #        x=r*np.cos(b);                     # compute x,y of vertex
+        #        y=r*np.sin(b);
+        #        grid.append(np.array([x,y,z]))
+        #        sph_grid.append(np.array([actual_a,b]))
+
+        #        nc = np.ceil(2.0*np.pi/dc)
+        #        c = 0.0
+        #        for ic in range(int(nc)):
+        #            # get XYZ for = 0 first!
+        #            xyz = getXYZ(self.samp.symbols, self.samp.internal.cart_coords)
+        #            xyz = getXYZ(self.samp.symbols, self.mycoords.ravel())
+
+        #            print(actual_a,b,c,'\t',da,db,dc)
+        #            # run Q-Chem job
+        #            if not dry:
+        #                E = get_electronic_energy(xyz=xyz, path=self.path, file_name=self.file_name.format(count),
+        #                        **self.qchem_kwargs)
+        #                v.append(E)
+        #            else:
+        #                E = 0
+        #                make_job(xyz=xyz, path=self.path, file_name=self.file_name.format(count),
+        #                        **self.qchem_kwargs)
+        #                if write:
+        #                    # write a file showing geometric configurations to sample
+        #                name = 'configs.txt'
+        #                with open(os.path.join(self.directory, name), 'a') as f:
+        #                    content = self.record_script.format(natom=self.samp.natom,
+        #                            sample=count, e_elect=E, xyz=xyz)
+        #                    f.write(content)
+        #            if nb == 1:
+        #                count += 1
+        #                break
+
+        #            c += dc
+        #            self.rigidrotor.rotate(dc,x,y,z)
+        #            self.mycoords[:self.nads] = self.rigidrotor.to_array()
+        #            count += 1
+
+        #        self.reorient_by(0,db) #(dtheta, dphi)
+        #        b += db
+
+        #    a -= da
+        #    actual_a += da
+        #    self.reorient_by(da,0)  #(dtheta, dphi)
+
         if not dry:
             v = np.array(v)-np.min(v)
             #np.save
@@ -217,7 +296,7 @@ class Adsorbate:
             Qold = Q
         print("Converged Lambda =", Lam)
         return E, S, F, Q, Cv
-        
+
     def calc_thermo(self, eig, Lam, T):
         N = Lam**2
         beta = 1/(constants.kB*T) * constants.E_h
@@ -249,7 +328,7 @@ class Adsorbate:
         Cv = (2/Q*dQ - T*pow(dQ/Q,2) + T/Q*ddQ)/beta
 
         return E, S, F, Q, Cv
-        
+
     def get_symmetry_number(self):
         Log = QChemLog(os.path.join(self.directory,
             'ads{}.q.out'.format(self.nads)))
@@ -272,7 +351,7 @@ class Adsorbate:
         #inertia_xyz = np.linalg.eigh(self.inertia)[1]
         print("HELLO")
         return Log.load_conformer()
-        
+
 
 def make_job(xyz, path, file_name, ncpus, charge=None, multiplicity=None, level_of_theory=None, basis=None, unrestricted=None, \
         is_QM_MM_INTERFACE=None, QM_USER_CONNECT=None, QM_ATOMS=None, force_field_params=None, fixed_molecule_string=None, opt=None, number_of_fixed_atoms=None):
@@ -294,11 +373,11 @@ def make_job(xyz, path, file_name, ncpus, charge=None, multiplicity=None, level_
                 break
         QMMM_xyz_string += fixed_molecule_string
         job = Job(QMMM_xyz_string, path, file_name,jobtype='sp', ncpus=ncpus, charge=charge, multiplicity=multiplicity, \
-            level_of_theory=level_of_theory, basis=basis, unrestricted=unrestricted, QM_atoms=QM_ATOMS, \
-            force_field_params=force_field_params, opt=opt, number_of_fixed_atoms=number_of_fixed_atoms)
+                level_of_theory=level_of_theory, basis=basis, unrestricted=unrestricted, QM_atoms=QM_ATOMS, \
+                force_field_params=force_field_params, opt=opt, number_of_fixed_atoms=number_of_fixed_atoms)
     else:
         job = Job(xyz, path, file_name,jobtype='sp', ncpus=ncpus, charge=charge, multiplicity=multiplicity, \
-            level_of_theory=level_of_theory, basis=basis, unrestricted=unrestricted)
-    
-    # Write Q-Chem input file
+                level_of_theory=level_of_theory, basis=basis, unrestricted=unrestricted)
+
+        # Write Q-Chem input file
     job.write_input_file()
