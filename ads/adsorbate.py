@@ -19,7 +19,8 @@ from ads.hamiltonian import set_anharmonic_H
 from sympy.physics.wigner import gaunt
 
 class Adsorbate:
-    def __init__(self, freqfile, directory, nads, T=300, P=101325, ncpus=4):
+    def __init__(self, freqfile, directory, nads, T=300, P=101325, ncpus=4,
+                grid='healpix'):
         self.freqfile = freqfile
         self.directory = directory
         self.nads = nads
@@ -27,6 +28,8 @@ class Adsorbate:
         self.result_info = list()
         self.P = P
         print(self.nads, type(self.nads))
+
+        self.grid = 'healpix'
 
         self.label = freqfile.split('.')[0]
         self.Log = QChemLog(os.path.join(directory, freqfile))
@@ -117,7 +120,7 @@ class Adsorbate:
         self.samp.internal.cart_coords[:(3*self.nads)] = self.rigidrotor.to_array().flatten()
         self.mycoords[:self.nads] = self.rigidrotor.to_array()
 
-    def sample(self, na=20, dry=False, write=False):
+    def sample(self, na=20, dry=False, write=False, grid='healpix'):
         # Returns a cartesian and spherical grid
         # na is the sampling resolution
         # spherical grid order = (θ, φ)
@@ -128,7 +131,7 @@ class Adsorbate:
 
         # begin sampling spherical grid
         grid = []
-        sph_grid = []                                
+        sph_grid = []
         v = []
         count = 0
 
@@ -139,51 +142,103 @@ class Adsorbate:
         #actual_a = 0.
         print('THETA', 'PHI', 'CHI', 'dTHETA', 'dPHI', 'dCHI')
 
-        nside = 2
-        theta, phi = hp.pix2ang(nside, np.arange(0,hp.nside2npix(nside)))
-        xyz = hp.ang2vec(theta,phi)
+        if grid == 'healpix':
+            # CONSTRUCT HEALPix grid of Nside = 2 (user-changed)
+            nside = 2
+            theta, phi = hp.pix2ang(nside, np.arange(0,hp.nside2npix(nside)))
+            xyz = hp.ang2vec(theta,phi)
 
-        thprev = 0.
-        phprev = 0.
-        chprev = 0.
-        chi = np.linspace(0, 2*np.pi, int(np.floor(2*np.pi/hp.nside2resol(nside))+1))[:-1]
-        count = 0
-        grid = hp.ang2vec(theta,phi)
-        for th,ph in zip(theta,phi):
-            self.reorient_by(0, ph-phprev)
-            self.reorient_by(th-thprev, 0)
-            for ch in chi:
-                print("Shifting by:", np.around(th-thprev,3), np.around(ph-phprev,3), np.around(ch-chprev,3),
-                      '\t', "Now at", np.around(th,3), np.around(ph,3), np.around(ch,3))
-                vec = hp.ang2vec(th,ph)
-                print("Z axis vec", *vec)
-                self.rigidrotor.rotate(ch-chprev, np.cos(ph)*np.sin(th), 
-                        np.sin(ph)*np.sin(th), np.cos(th))
-                self.mycoords[:self.nads] = self.rigidrotor.to_array()
+            thprev = 0.
+            phprev = 0.
+            chprev = 0.
+            chi = np.linspace(0, 2*np.pi, int(np.floor(2*np.pi/hp.nside2resol(nside))+1))[:-1]
+            count = 0
+            grid = hp.ang2vec(theta,phi)
+            for th,ph in zip(theta,phi):
+                self.reorient_by(0, ph-phprev)
+                self.reorient_by(th-thprev, 0)
+                for ch in chi:
+                    print("Shifting by:", np.around(th-thprev,3), np.around(ph-phprev,3), np.around(ch-chprev,3),
+                          '\t', "Now at", np.around(th,3), np.around(ph,3), np.around(ch,3))
+                    vec = hp.ang2vec(th,ph)
+                    print("Z axis vec", *vec)
+                    self.rigidrotor.rotate(ch-chprev, np.cos(ph)*np.sin(th), 
+                            np.sin(ph)*np.sin(th), np.cos(th))
+                    self.mycoords[:self.nads] = self.rigidrotor.to_array()
 
-                xyz = getXYZ(self.samp.symbols, self.mycoords.ravel())
-                if not dry:
-                    E = get_electronic_energy(xyz=xyz, path=self.path, file_name=self.file_name.format(count),
+                    xyz = getXYZ(self.samp.symbols, self.mycoords.ravel())
+                    if not dry:
+                        E = get_electronic_energy(xyz=xyz, path=self.path, file_name=self.file_name.format(count),
+                                    **self.qchem_kwargs)
+                        v.append(E)
+                    else:
+                        E = 0
+                        make_job(xyz=xyz, path=self.path, file_name=self.file_name.format(count),
                                 **self.qchem_kwargs)
-                    v.append(E)
-                else:
-                    E = 0
-                    make_job(xyz=xyz, path=self.path, file_name=self.file_name.format(count),
-                            **self.qchem_kwargs)
-                    if write:
-                        # write a file showing geometric configurations to sample
-                        name = 'configs.txt'
-                        with open(os.path.join(self.directory, name), 'a') as f:
-                            content = self.record_script.format(natom=self.samp.natom,
-                                    sample=count, e_elect=E, xyz=xyz)
-                            f.write(content)
+                        if write:
+                            # write a file showing geometric configurations to sample
+                            name = 'configs.txt'
+                            with open(os.path.join(self.directory, name), 'a') as f:
+                                content = self.record_script.format(natom=self.samp.natom,
+                                        sample=count, e_elect=E, xyz=xyz)
+                                f.write(content)
 
-                sph_grid.append(np.array([th,ph,ch]))
-                chprev = ch
-                thprev = th
-                phprev = ph
-                count += 1
+                    sph_grid.append(np.array([th,ph,ch]))
+                    chprev = ch
+                    thprev = th
+                    phprev = ph
+                    count += 1
+        if grid == 'lebedev':
+            # CONSTRUCT LEBEDEV GRID
+            npoints = 50    # choices {6, 14, 26, 38, 50, 74, 86, 110, 146,
+                            #           170, ...}
+            thprev = 0.
+            phprev = 0.
+            chprev = 0.
+            xyz,wts = numgrid.angular_grid(npoints)
+            resol = 2*np.sqrt(np.pi/npoints)
+            chi = np.linspace(0,2*np.pi, int(np.floor(2*np.pi/resol)))[:-1]
+            XYZ = np.array([np.array(coord) for coord in xyz])
+            X,Y,Z = XYZ[:,0], XYZ[:,1], XYZ[:,2]
+            theta,phi = np.arctan2(np.sqrt(np.power(X,2)+np.power(Y,2)),Z),\
+                            np.arctan2(Y,X)
+            angs = np.array(list(sorted(zip(theta,phi%(2*np.pi)),
+                key=lambda t: t[0]))) # angle combinations for spherical grid sorted by theta
+            count = 0
+            for th,ph in angs:
+                self.reorient_by(0, ph-phprev)
+                self.reorient_by(th-thprev, 0)
+                for ch in chi:
+                    print("Shifting by:", np.around(th-thprev,3), np.around(ph-phprev,3), np.around(ch-chprev,3),
+                          '\t', "Now at", np.around(th,3), np.around(ph,3), np.around(ch,3))
+                    vec = hp.ang2vec(th,ph)
+                    print("Z axis vec", *vec)
+                    self.rigidrotor.rotate(ch-chprev, np.cos(ph)*np.sin(th),
+                            np.sin(ph)*np.sin(th), np.cos(th))
+                    self.mycoords[:self.nads] = self.rigidrotor.to_array()
 
+                    xyz = getXYZ(self.samp.symbols, self.mycoords.ravel())
+                    if not dry:
+                        E = get_electronic_energy(xyz=xyz, path=self.path, file_name=self.file_name.format(count),
+                                    **self.qchem_kwargs)
+                        v.append(E)
+                    else:
+                        E = 0
+                        make_job(xyz=xyz, path=self.path, file_name=self.file_name.format(count),
+                                **self.qchem_kwargs)
+                        if write:
+                            # write a file showing geometric configurations to sample
+                            name = 'configs.txt'
+                            with open(os.path.join(self.directory, name), 'a') as f:
+                                content = self.record_script.format(natom=self.samp.natom,
+                                        sample=count, e_elect=E, xyz=xyz)
+                                f.write(content)
+
+                    sph_grid.append(np.array([th,ph,ch]))
+                    chprev = ch
+                    thprev = th
+                    phprev = ph
+                    count += 1
 
         #for ia in range(na): # slice sphere to circles in xy planes
         #    r=np.cos(a);                           # radius of actual circle in xy plane

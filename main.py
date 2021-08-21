@@ -22,6 +22,7 @@ def parse_command_line_arguments(command_line_args=None):
                         help='a frequency file describing the job to execute')
     parser.add_argument('-n', type=int, help='number of CPUs to run quantum calculation')
     parser.add_argument('-nads', type=str, help='number of atoms in the adsorbate')
+    parser.add_argument('-g', type=str, help='gridtype')
     parser.add_argument('-T', type=int, help='Temperature in Kelvin')
     parser.add_argument('-ncirc', type=int, help='number of circles')
     parser.add_argument('-hpc', type=bool, help='if run on cluster')
@@ -44,19 +45,24 @@ def main():
     hpc = bool(args.hpc)
     nads = int(args.nads)
     dry = bool(args.dry)
+    if args.g is not None:
+        gridtype = str(args.g)
+    else:
+        gridtype = 'healpix'
     print("Number of adsorbates is", nads)
+    print("Sampling will be done with {} grid.".format(gridtype))
     ads = Adsorbate(input_file, project_directory, nads, ncpus=ncpus)
     if not os.path.exists(path.format('xsph')) and not os.path.exists(path.format('v')):
         if not T:
             T = 300
         if dry:
             print("Just writing inputs!")
-            x,xsph,v = ads.sample(na=ncirc, dry=dry, write=True)
+            x,xsph,v = ads.sample(na=ncirc, dry=dry, write=True, grid=gridtype)
             return
         else:
-            x,xsph,v = ads.sample(na=ncirc, dry=dry, write=True)
+            x,xsph,v = ads.sample(na=ncirc, dry=dry, write=True, grid=gridtype)
             np.save(path.format('xcart'), x)
-            np.save(path.format('xsph'), xsph)   
+            np.save(path.format('xsph'), xsph)
             np.save(path.format('v'), v)
 
     xsph = np.load(path.format('xsph'))
