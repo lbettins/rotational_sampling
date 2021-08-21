@@ -15,6 +15,7 @@ import healpy as hp
 import matplotlib.pyplot as plt
 import mpl_toolkits.mplot3d.axes3d as axes3d
 import scipy.special
+import numgrid
 from ads.hamiltonian import set_anharmonic_H
 from sympy.physics.wigner import gaunt
 
