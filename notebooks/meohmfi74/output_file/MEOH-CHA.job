@@ -1,0 +1,28 @@
+#!/bin/bash -l
+#$ -S /bin/bash
+#$ -cwd
+#$ -N q-MEOH-CHA
+#$ -q all.q
+#$ -t 1-35
+#$ -tc 10
+#$ -pe shared 32
+#$ -j y
+#$ -o MEOH-CHA.o$JOB_ID
+
+source /home/mgcf/software-ws/qchem/qchem_540/MGCF_qcenv.sh
+
+cd $SGE_O_WORKDIR
+/bin/hostname
+
+set echo
+awk '{ print $1 }' $PE_HOSTFILE > MEOH-CHA.$SGE_TASK_ID.nodes
+export QCMACHINEFILE=MEOH-CHA.$SGE_TASK_ID.nodes
+export QCSCRATCH=$SGE_O_WORKDIR/$JOB_ID/$SGE_TASK_ID
+/bin/mkdir -p $QCSCRATCH
+export QCLOCALSCR=/scr/$USER/$JOB_ID/$SGE_TASK_ID
+/bin/mkdir -p $QCLOCALSCR
+/usr/bin/env
+
+N=`expr $SGE_TASK_ID+1000`
+
+/home/mgcf/software-ws/qchem/qchem_540/bin/qchem -nt 32 samp_$N.qcin samp_$N.q.out

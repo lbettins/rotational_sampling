@@ -11,15 +11,21 @@ from tnuts.qchem import get_level_of_theory, load_adsorbate
 from tnuts.job.job import Job
 from rigidObject import RigidObject
 import numpy as np
-import healpy as hp
 import matplotlib.pyplot as plt
-import mpl_toolkits.mplot3d.axes3d as axes3d
 import scipy.special
 import numgrid
 from ads.hamiltonian import set_anharmonic_H
 from sympy.physics.wigner import gaunt
 
 class Adsorbate:
+    """
+    This class is where all of the adsorbate orientational sampling is done.
+    The geometries are obtained from a standard Q-Chem frequency file. Helper
+    functions to parse the freq-file outputs are obtained from the APE and
+    TNUTS modules. The Numgrid package discretizes the SO(3) domain into a
+    Lebedev grid. Rotations are performed through the rigidObject class, which
+    is created from adsorbate coordinates.
+    """
     def __init__(self, freqfile, directory, nads, T=300, P=101325, ncpus=4,
                 grid='healpix'):
         self.freqfile = freqfile
@@ -121,99 +127,41 @@ class Adsorbate:
         self.samp.internal.cart_coords[:(3*self.nads)] = self.rigidrotor.to_array().flatten()
         self.mycoords[:self.nads] = self.rigidrotor.to_array()
 
-    def sample(self, na=20, dry=False, write=False, grid='healpix'):
-        # Returns a cartesian and spherical grid
-        # na is the sampling resolution
+    def sample(self, na=20, dry=False, write=False, which_grid='lebedev'):
+        # Returns a cartesian and spherical grid.
+        # na is a relic of past implementation and is not used.
         # spherical grid order = (θ, φ)
-        # na = number of circular slices
 
         # filename for vmd viewing
         name = 'configs.txt'
 
         # begin sampling spherical grid
-        grid = []
         sph_grid = []
         v = []
         count = 0
 
-        #dc = np.pi/(na-1); # intrinsic rotation (spin) step
-
-        #da = np.pi/(na-1); # latitude angle step
-        #a = np.pi/2
-        #actual_a = 0.
-        print('THETA', 'PHI', 'CHI', 'dTHETA', 'dPHI', 'dCHI')
-
-        if grid == 'healpix':
-            # CONSTRUCT HEALPix grid of Nside = 2 (user-changed)
+        # Strongly recommended to not use 'healpix' so comments in this block
+        # of code are very limited.
+        if which_grid == 'healpix':
+            # CONSTRUCT HEALPix grid of Nside = 2
+            # Needs healpy package
+            import healpy as hp
             nside = 2
             theta, phi = hp.pix2ang(nside, np.arange(0,hp.nside2npix(nside)))
             xyz = hp.ang2vec(theta,phi)
 
+            # Set equilibrium (initial) theta, phi, chi to (0.,0.,0.)
             thprev = 0.
             phprev = 0.
             chprev = 0.
             chi = np.linspace(0, 2*np.pi, int(np.floor(2*np.pi/hp.nside2resol(nside))+1))[:-1]
-            count = 0
+            count = 0   # used to label job numbers
             grid = hp.ang2vec(theta,phi)
             for th,ph in zip(theta,phi):
                 self.reorient_by(0, ph-phprev)
                 self.reorient_by(th-thprev, 0)
                 for ch in chi:
-                    print("Shifting by:", np.around(th-thprev,3), np.around(ph-phprev,3), np.around(ch-chprev,3),
-                          '\t', "Now at", np.around(th,3), np.around(ph,3), np.around(ch,3))
                     vec = hp.ang2vec(th,ph)
-                    print("Z axis vec", *vec)
-                    self.rigidrotor.rotate(ch-chprev, np.cos(ph)*np.sin(th), 
-                            np.sin(ph)*np.sin(th), np.cos(th))
-                    self.mycoords[:self.nads] = self.rigidrotor.to_array()
-
-                    xyz = getXYZ(self.samp.symbols, self.mycoords.ravel())
-                    if not dry:
-                        E = get_electronic_energy(xyz=xyz, path=self.path, file_name=self.file_name.format(count),
-                                    **self.qchem_kwargs)
-                        v.append(E)
-                    else:
-                        E = 0
-                        make_job(xyz=xyz, path=self.path, file_name=self.file_name.format(count),
-                                **self.qchem_kwargs)
-                        if write:
-                            # write a file showing geometric configurations to sample
-                            name = 'configs.txt'
-                            with open(os.path.join(self.directory, name), 'a') as f:
-                                content = self.record_script.format(natom=self.samp.natom,
-                                        sample=count, e_elect=E, xyz=xyz)
-                                f.write(content)
-
-                    sph_grid.append(np.array([th,ph,ch]))
-                    chprev = ch
-                    thprev = th
-                    phprev = ph
-                    count += 1
-        if grid == 'lebedev':
-            # CONSTRUCT LEBEDEV GRID
-            npoints = 50    # choices {6, 14, 26, 38, 50, 74, 86, 110, 146,
-                            #           170, ...}
-            thprev = 0.
-            phprev = 0.
-            chprev = 0.
-            xyz,wts = numgrid.angular_grid(npoints)
-            resol = 2*np.sqrt(np.pi/npoints)
-            chi = np.linspace(0,2*np.pi, int(np.floor(2*np.pi/resol)))[:-1]
-            XYZ = np.array([np.array(coord) for coord in xyz])
-            X,Y,Z = XYZ[:,0], XYZ[:,1], XYZ[:,2]
-            theta,phi = np.arctan2(np.sqrt(np.power(X,2)+np.power(Y,2)),Z),\
-                            np.arctan2(Y,X)
-            angs = np.array(list(sorted(zip(theta,phi%(2*np.pi)),
-                key=lambda t: t[0]))) # angle combinations for spherical grid sorted by theta
-            count = 0
-            for th,ph in angs:
-                self.reorient_by(0, ph-phprev)
-                self.reorient_by(th-thprev, 0)
-                for ch in chi:
-                    print("Shifting by:", np.around(th-thprev,3), np.around(ph-phprev,3), np.around(ch-chprev,3),
-                          '\t', "Now at", np.around(th,3), np.around(ph,3), np.around(ch,3))
-                    vec = hp.ang2vec(th,ph)
-                    print("Z axis vec", *vec)
                     self.rigidrotor.rotate(ch-chprev, np.cos(ph)*np.sin(th),
                             np.sin(ph)*np.sin(th), np.cos(th))
                     self.mycoords[:self.nads] = self.rigidrotor.to_array()
@@ -228,7 +176,8 @@ class Adsorbate:
                         make_job(xyz=xyz, path=self.path, file_name=self.file_name.format(count),
                                 **self.qchem_kwargs)
                         if write:
-                            # write a file showing geometric configurations to sample
+                            # write a file showing geometric configurations to
+                            # be sampled
                             name = 'configs.txt'
                             with open(os.path.join(self.directory, name), 'a') as f:
                                 content = self.record_script.format(natom=self.samp.natom,
@@ -241,157 +190,108 @@ class Adsorbate:
                     phprev = ph
                     count += 1
 
-        #for ia in range(na): # slice sphere to circles in xy planes
-        #    r=np.cos(a);                           # radius of actual circle in xy plane
-        #    z=np.sin(a);                           # height of actual circle in xy plane
-        #    nb=np.ceil(2.0*np.pi*r/da)
-        #    db=2.0*np.pi/nb;             # longitude angle step
-        #    if ia==0 or ia==na-1:
-        #        nb=1
-        #        db=0.0 # handle edge cases
+        # Strongly recommended to use Lebedev grids!
+        if which_grid == 'lebedev':
+            # CONSTRUCT LEBEDEV GRID
+            npoints = 50    # choices {6, 14, 26, 38, 50, 74, 86, 110, 146,
+                            #           170, ...}
+            # Set equilibrium (initial) theta, phi, chi to (0.,0.,0.)
+            thprev = 0.
+            phprev = 0.
+            chprev = 0.
 
-        #    b = 0.0
-        #    for ib in range(int(nb)):  # cut circle to vertexes
-        #        x=r*np.cos(b);                     # compute x,y of vertex
-        #        y=r*np.sin(b);
-        #        grid.append(np.array([x,y,z]))
-        #        sph_grid.append(np.array([actual_a,b]))
+            # Obtain Lebedev grid in (θ,φ)
+            # (χ is obtained by uniform discretization).
+            xyz,wts = numgrid.angular_grid(npoints)
+            resol = 2*np.sqrt(np.pi/npoints)
+            chi = np.linspace(0,2*np.pi, int(np.floor(2*np.pi/resol)))[:-1] # χ
+            XYZ = np.array([np.array(coord) for coord in xyz])
+            X,Y,Z = XYZ[:,0], XYZ[:,1], XYZ[:,2]
+            theta,phi = np.arctan2(np.sqrt(np.power(X,2)+np.power(Y,2)),Z),\
+                            np.arctan2(Y,X) # θ, φ
+            angs = np.array(list(sorted(zip(theta,phi%(2*np.pi)),
+                key=lambda t: t[0]))) # angle combinations for spherical grid sorted by theta
 
-        #        nc = np.ceil(2.0*np.pi/dc)
-        #        c = 0.0
-        #        for ic in range(int(nc)):
-        #            # get XYZ for = 0 first!
-        #            xyz = getXYZ(self.samp.symbols, self.samp.internal.cart_coords)
-        #            xyz = getXYZ(self.samp.symbols, self.mycoords.ravel())
+            count = 0   # to label job numbers
+            for th,ph in angs:
+                # Reorient adsorbate in increments of Δθ, Δφ.
+                self.reorient_by(0, ph-phprev)
+                self.reorient_by(th-thprev, 0)
+                # For each orientation of (θ,φ), sample a full χ rotation
+                # (around molecular z axis)
+                for ch in chi:
+                    print("Shifting by:", np.around(th-thprev,3), np.around(ph-phprev,3), np.around(ch-chprev,3),
+                          '\t', "Now at", np.around(th,3), np.around(ph,3), np.around(ch,3))
+                    # molecular z rotation is done around vector (x,y,z) specified by
+                    # *vec = (θ, φ)
+                    vec = hp.ang2vec(th,ph) # not used
+                    # Do the χ rotation around *vec
+                    self.rigidrotor.rotate(ch-chprev, np.cos(ph)*np.sin(th),
+                            np.sin(ph)*np.sin(th), np.cos(th))
+                    # Set adsorbate geometry to rotated geometry
+                    self.mycoords[:self.nads] = self.rigidrotor.to_array()
+                    xyz = getXYZ(self.samp.symbols, self.mycoords.ravel())
 
-        #            print(actual_a,b,c,'\t',da,db,dc)
-        #            # run Q-Chem job
-        #            if not dry:
-        #                E = get_electronic_energy(xyz=xyz, path=self.path, file_name=self.file_name.format(count),
-        #                        **self.qchem_kwargs)
-        #                v.append(E)
-        #            else:
-        #                E = 0
-        #                make_job(xyz=xyz, path=self.path, file_name=self.file_name.format(count),
-        #                        **self.qchem_kwargs)
-        #                if write:
-        #                    # write a file showing geometric configurations to sample
-        #                name = 'configs.txt'
-        #                with open(os.path.join(self.directory, name), 'a') as f:
-        #                    content = self.record_script.format(natom=self.samp.natom,
-        #                            sample=count, e_elect=E, xyz=xyz)
-        #                    f.write(content)
-        #            if nb == 1:
-        #                count += 1
-        #                break
+                    if not dry:
+                        # do the calculation using helper function
+                        E = get_electronic_energy(xyz=xyz, path=self.path, file_name=self.file_name.format(count),
+                                    **self.qchem_kwargs)
+                        v.append(E)
+                    else:
+                        # or just write the inputs with a dummy E used for VMD
+                        # software, also using helper function
+                        E = 0
+                        make_job(xyz=xyz, path=self.path, file_name=self.file_name.format(count),
+                                **self.qchem_kwargs)
+                        if write:
+                            # write a file showing geometric configurations to sample
+                            name = 'configs.txt'
+                            with open(os.path.join(self.directory, name), 'a') as f:
+                                content = self.record_script.format(natom=self.samp.natom,
+                                        sample=count, e_elect=E, xyz=xyz)
+                                f.write(content)
 
-        #            c += dc
-        #            self.rigidrotor.rotate(dc,x,y,z)
-        #            self.mycoords[:self.nads] = self.rigidrotor.to_array()
-        #            count += 1
-
-        #        self.reorient_by(0,db) #(dtheta, dphi)
-        #        b += db
-
-        #    a -= da
-        #    actual_a += da
-        #    self.reorient_by(da,0)  #(dtheta, dphi)
+                    # update variables for next iteration
+                    sph_grid.append(np.array([th,ph,ch]))
+                    chprev = ch
+                    thprev = th
+                    phprev = ph
+                    count += 1
 
         if not dry:
+            # set 0 of energy to the minimum energy sampled (should be
+            # equilibrium energy at (0.,0.,0.) )
             v = np.array(v)-np.min(v)
-            #np.save
-        return np.array(grid), np.array(sph_grid), np.array(v)
+        # Return θ,φ,χ grid and energy grid
+        return np.array(sph_grid), np.array(v)
 
     def solv_eig(self, ahat, T):
-        # Solve eigenvalues for ROTATION only
-        Lam = 18
-        Lam_prev = 0
-        H_prev = None
-        Qold = np.log(sys.float_info[0])
-        converge = False
-        while not converge:
-            Lam += 1
-            H = set_anharmonic_H(ahat, I,
-                    Lam, Lam_prev,
-                    H_prev=H_prev)
-            H_prev = deepcopy(H)
-            eig, v = np.linalg.eigh(H)
-            E, S, F, Q, Cv = self.calc_thermo(eig, Lam, T)
-
-            if Qold == np.log(sys.float_info[0]):
-                self.result_info.append("# \n# \t %d \t\t-\t\t-" % Nbasis) #first run
-            else:
-                self.result_info.append("# \n# \t %d \t\t %.10f \t\t %.10f" % (Nbasis,abs(Q-Qold)))
-
-            #if ((abs(Q-Qold)<1e-4)):
-            if ((abs(Q-Qold)<100)):
-                self.result_info.append("# Convergence criterion met")
-                self.result_info.append("# ------------------------------------")
-                converge = True
-                self.result_info.append("# Frequency (cm-1): %.10f" % v)
-                self.result_info.append("# Zero point vibrational energy (hartree): %.10f" % E0)
-                self.result_info.append("# Energy (hartree): %.10f" % E )
-                self.result_info.append("# Entropy (hartree/K): %.10f" % S)
-                self.result_info.append("# Free energy (hartree): %.10f" % F)
-                self.result_info.append("# Partition function: %.10f" % Q)
-                hartree2kcalmol = constants.E_h * constants.Na / 4184
-                E0 *= hartree2kcalmol
-                E *= hartree2kcalmol
-                S *= hartree2kcalmol * 1000
-                F *= hartree2kcalmol
-                Cv *= hartree2kcalmol * 1000
-                '''
-                print("Frequency (cm-1): ",v)
-                print("Zero point vibrational energy (kcal/mol): ",E0)
-                print("Energy (kcal/mol): ",E )
-                print("Entropy (cal/mol/K): ",S)
-                print("Free energy (kcal/mol): ",F)
-                print("Partition function: ",Q)
-                '''
-
-            Qold = Q
-        print("Converged Lambda =", Lam)
-        return E, S, F, Q, Cv
+        """
+        Not implemented, this was done by solving ahat coefficients, then using
+        a C++ executable to diagonalize rotational Hamiltonian.
+        """
+        return
 
     def calc_thermo(self, eig, Lam, T):
-        N = Lam**2
-        beta = 1/(constants.kB*T) * constants.E_h
-
-        Q = 0
-        E = 0
-        dQ = 0
-        ddQ = 0
-        for i in range(N):
-            Ei = eig[i]
-            Q += exp(-beta*Ei)
-            dQ += Ei*exp(-beta*Ei)*beta/T
-            ddQ += -2*Ei*exp(-beta*Ei)*beta/pow(T,2) + pow(Ei,2)*exp(-beta*Ei)*pow(beta,2)/pow(T,2)
-            E += Ei*exp(-beta*Ei)
-        E /= Q
-        if True:
-            omega = self.get_symmetry_number()
-            Q /= omega
-            dQ /= omega
-            ddQ /= omega
-
-        E0 = eig[0]
-        v = (eig[1]-eig[0]) * constants.E_h / constants.h / (constants.c * 100)
-        print(v)
-        #print(Q)
-
-        F = -math.log(Q)/beta
-        S = (E - F)/T
-        Cv = (2/Q*dQ - T*pow(dQ/Q,2) + T/Q*ddQ)/beta
-
-        return E, S, F, Q, Cv
+        """
+        Not implemented, this was done by solving ahat coefficients, then using
+        a C++ executable to diagonalize rotational Hamiltonian.
+        """
+        return
 
     def get_symmetry_number(self):
+        """
+        Rotational symmetry number of adsorbate
+        """
         Log = QChemLog(os.path.join(self.directory,
             'ads{}.q.out'.format(self.nads)))
         symmetry = Log.load_conformer[0].modes[1].symmetry
         return symmetry
 
     def get_moment_of_inertia(self):
+        """
+        Rotational moments of inertia or contained within conformer object.
+        """
         if not os.path.exists(os.path.join(self.directory,
             'ads{}.q.out'.format(self.nads))):
             ads_xyz = getXYZ(self.samp.symbols[:self.nads],
@@ -402,15 +302,15 @@ class Adsorbate:
             adsJob.submit()
         Log = QChemLog(os.path.join(self.directory,
             'ads{}.q.out'.format(self.nads)))
-        #ads_conformer, unscaled_frequencies = adsLog.load_conformer()
-        #inertia = ads_conformer.get_moment_of_inertia_tensor()
-        #inertia_xyz = np.linalg.eigh(self.inertia)[1]
-        print("HELLO")
         return Log.load_conformer()
 
 
 def make_job(xyz, path, file_name, ncpus, charge=None, multiplicity=None, level_of_theory=None, basis=None, unrestricted=None, \
         is_QM_MM_INTERFACE=None, QM_USER_CONNECT=None, QM_ATOMS=None, force_field_params=None, fixed_molecule_string=None, opt=None, number_of_fixed_atoms=None):
+    """
+    This uses helper functions from APE to create QM/MM jobs with the same
+    $rem$ variables as the Q-Chem freq-file.
+    """
     #file_name = 'output'
     if is_QM_MM_INTERFACE:
         # Create geometry format of QM/MM system 

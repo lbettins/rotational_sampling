@@ -2,45 +2,47 @@
 # -*- coding: utf-8 -*-
 
 """
-Spherical sampling of rotational degrees of freedom
+Spherical grid sampling of rotational degrees of freedom
 """
 import argparse
 import os
 import numpy as np
 from ape.sampling import SamplingJob
 from ape.qchem import QChemLog
-from tnuts.qchem import get_level_of_theory
-#from tnuts.main import MCMCTorsions, NUTS_run
-from ads.sph_harm import Yij as Y
 from ads.adsorbate import Adsorbate
-from ads.graphics import make_fig
+#from tnuts.qchem import get_level_of_theory
+#from tnuts.main import MCMCTorsions, NUTS_run
+#from ads.sph_harm import Yij as Y
+#from ads.graphics import make_fig
 
 def parse_command_line_arguments(command_line_args=None):
-    
+    # Arguments to include when executing code
     parser = argparse.ArgumentParser(description='Automated Property Estimator (APE)')
     parser.add_argument('file', metavar='FILE', type=str, nargs=1,
-                        help='a frequency file describing the job to execute')
+                        help='Q-Chem frequency file describing the job to execute')
     parser.add_argument('-n', type=int, help='number of CPUs to run quantum calculation')
     parser.add_argument('-nads', type=str, help='number of atoms in the adsorbate')
-    parser.add_argument('-g', type=str, help='gridtype')
+    parser.add_argument('-g', type=str, help='gridtype (use "lebedev")')
     parser.add_argument('-T', type=int, help='Temperature in Kelvin')
-    parser.add_argument('-ncirc', type=int, help='number of circles')
+    parser.add_argument('-ncirc', type=int, help='number of gridpoints')
     parser.add_argument('-hpc', type=bool, help='if run on cluster')
     parser.add_argument('-dry', type=bool, help='just write scripts')
-
     args = parser.parse_args(command_line_args)
     args = parser.parse_args()
     args.file = args.file[0]
     return args
 
 def main():
-    # IF JOB HAS ALREADY COMPLETED, WE JUST WANT TO ANALYZE THE DATA FROM .npy FILES
+    # If job has already completed, we just want to analyze the data from .npy
+    # files
+    # First get command line arguments:
     args = parse_command_line_arguments()
     input_file = args.file.split('/')[-1]
     project_directory = os.path.abspath(os.path.dirname(args.file))
     path = os.path.join(project_directory, '{}.npy')
-    ncpus = int(args.n) if args.n is not None else 4
-    T = float(args.T) if args.T is not None else 300
+    ncpus = int(args.n) if args.n is not None else 4    # no. threads
+    T = float(args.T) if args.T is not None else 298    # stand. temp.
+    # ncirc is no longer used / is a relic of past implementation
     ncirc = int(args.ncirc) if args.ncirc is not None else 25
     hpc = bool(args.hpc)
     nads = int(args.nads)
@@ -48,75 +50,32 @@ def main():
     if args.g is not None:
         gridtype = str(args.g)
     else:
-        gridtype = 'healpix'
+        gridtype = 'healpix'    # no clear quadrature rules (avoid)
+
     print("Number of adsorbates is", nads)
     print("Sampling will be done with {} grid.".format(gridtype))
+    # Create Adsorbate object to facilitate sampling
     ads = Adsorbate(input_file, project_directory, nads, ncpus=ncpus)
+
+    # If sampling has been done already, a pickle will exist named 'xsph.npy', whose
+    # energies are in 'v.npy', and we can skip this part
     if not os.path.exists(path.format('xsph')) and not os.path.exists(path.format('v')):
         if not T:
-            T = 300
-        if dry:
-            print("Just writing inputs!")
-            x,xsph,v = ads.sample(na=ncirc, dry=dry, write=True, grid=gridtype)
+            T = 298
+        if dry: # just write the inputs
+            x,xsph,v = ads.sample(na=ncirc, dry=dry, write=True, which_grid=gridtype)
             return
         else:
-            x,xsph,v = ads.sample(na=ncirc, dry=dry, write=True, grid=gridtype)
-            np.save(path.format('xcart'), x)
+            xsph,v = ads.sample(na=ncirc, dry=dry, write=True, which_grid=gridtype)
             np.save(path.format('xsph'), xsph)
             np.save(path.format('v'), v)
 
+    # Load 'xsph.npy' and 'v.npy' arrays
     xsph = np.load(path.format('xsph'))
     v = np.load(path.format('v'))
 
-    Ymat = Y(xsph, lmax=30)
-    
-    # SOLVE THE COEFFICIENTS
-    U,S,V = np.linalg.svd(Ymat, full_matrices=False)
-    ahat = np.matmul( np.linalg.pinv(np.matmul(U, np.matmul( np.diag(S), V))), np.array(v))
-    
-    print(len(ahat), ahat)
-    inert = ads.get_moment_of_inertia()[0]
-    #print(inert.get_partition_function(300))
-    #print(inert.get_entropy(300))
-
-    print(np.power(np.array(inert.modes[1].inertia.value), -1.))
-    I = np.sum(np.power(np.array(inert.modes[1].inertia.value), -1.))
-    print(I)
-    print(inert.modes[1].inertia.value)
-
-    ###################################################
-    # CALC THERMO
-    ###################################################
-    conformer = inert
-
-    # Gas phase translation
-    E_trans = 1.5 * constants.R * T / 4184
-    S_trans = conformer.modes[0].get_entropy(T)/4.184\
-            - constants.R*math.log(P / 101325)/4.184
-    Cv_trans = 1.5 * constants.R / 4184 * 1000
-    Q_trans = conformer.modes[0].get_partition_function(T)
-
-    # Gas phase rotation
-    E_rot = conformer.modes[1].get_enthalpy(T) / 4184
-    S_rot = conformer.modes[1].get_entropy(T) / 4.184
-    Cv_rot = conformer.modes[1].get_heat_capacity(T) / 4.184
-    Q_rot = conformer.modes[1].get_partition_function(T)
-
-    # Ads phase rotation
-    v, e, s, f, q, cv = ads.solv_eig(ahat, T)
-
-    # Ads phase translation
-    e_trans = 0
-    s_trans = 0
-    cv_trans = 0
-    q_trans = 1
-
-    #####################################################
-    # END CALC THERMO
-    #####################################################
-
-
-    make_fig(xsph, v, project_directory, lmax=30)
+    # This is where coefficient fitting in the Wigner D-Mat. elem. basis is
+    # done. This currently exists in a jupyter notebook.
 
 
 if __name__ == '__main__':
